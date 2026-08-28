@@ -36,11 +36,17 @@ class Beat {
   /// complaints.
   final List<NRect> focus;
 
+  /// Position in the page's reading order, taken from the panels this beat
+  /// covers. Panels are the reliable structure; dialogue only refines within
+  /// them. Without this, dropping and re-adding a beat reordered the read.
+  final int order;
+
   const Beat({
     required this.rect,
     required this.balloons,
     this.isArt = false,
     this.focus = const [],
+    this.order = 0,
   });
 
   @override
@@ -302,14 +308,29 @@ class BeatPlanner {
         repeated += s.overlap(rect);
       }
       final share = repeated / math.max(rect.area, 1e-9);
+      // Dropping a beat that is the only one covering its panel is what put
+      // page 16's bottom-left panels after the bottom-right one: the beat was
+      // removed as redundant, then re-added by the coverage pass at the end.
+      var onlyCover = true;
+      for (final s2 in shown) {
+        if (s2.overlap(u.rect) / math.max(u.rect.area, 1e-9) > 0.6) {
+          onlyCover = false;
+          break;
+        }
+      }
       final addsNothing = u.balloons.isEmpty || u.balloons.every(seen.contains);
-      if (addsNothing && share > (u.balloons.isEmpty ? 0.55 : 0.85)) continue;
+      if (!onlyCover &&
+          addsNothing &&
+          share > (u.balloons.isEmpty ? 0.55 : 0.85)) {
+        continue;
+      }
 
       beats.add(Beat(
         rect: rect,
         balloons: u.balloons,
         isArt: u.balloons.isEmpty,
         focus: [u.rect],
+        order: u.panel * 100 + beats.length,
       ));
       shown.add(rect);
       seen.addAll(u.balloons);
@@ -317,7 +338,11 @@ class BeatPlanner {
         if (rect.fractionOf(page.balloons[i].rect) > 0.85) seen.add(i);
       }
     }
-    return _coverPanels(beats, page, viewport, pagePx);
+    final covered = _coverPanels(beats, page, viewport, pagePx);
+    // Panels are the narrative order. Nothing above may reorder the read.
+    final ordered = List<Beat>.from(covered)
+      ..sort((a, b) => a.order.compareTo(b.order));
+    return ordered;
   }
 
   /// No part of the page may be skipped. A panel no beat reaches is folded
@@ -329,7 +354,8 @@ class BeatPlanner {
     // just adds a whole-page beat, which is worse than the gap it fixes.
     if (page.confidence < 0.5 || page.panels.length <= 1) return beats;
     final out = List<Beat>.from(beats);
-    for (final panel in page.panels) {
+    for (var pi = 0; pi < page.panels.length; pi++) {
+      final panel = page.panels[pi];
       if (panel.rect.area < 0.045 || panel.rect.area > 0.6) continue;
       // Coverage is the UNION of all beats, not the best single one: a column
       // deliberately split into two beats is covered by neither alone, and
@@ -368,6 +394,7 @@ class BeatPlanner {
           balloons: out[target].balloons,
           isArt: out[target].isArt,
           focus: [...out[target].focus, panel.rect],
+          order: out[target].order,
         );
       } else {
         // Insert in reading position rather than re-sorting the whole list:
@@ -384,7 +411,7 @@ class BeatPlanner {
         }
         out.insert(at, Beat(
             rect: panel.rect, balloons: const [], isArt: true,
-            focus: [panel.rect]));
+            focus: [panel.rect], order: pi * 100));
       }
     }
     return out;
@@ -528,20 +555,46 @@ class BeatPlanner {
   /// a panel. Returns caption-row units, or null when this is a normal page.
   List<_Unit>? _splashUnits(PageGuide page, Size viewport, Size pagePx) {
     if (page.balloons.length < 3) return null;
-    var dominant = -1;
-    for (var i = 0; i < page.panels.length; i++) {
-      if (page.panels[i].rect.area > 0.5) dominant = i;
-    }
-    // Also take this path when the analyser flagged the layout as unreliable.
-    if (dominant < 0 && page.confidence >= 0.5) return null;
-    if (dominant < 0) dominant = 0;
-    // Prefer captions where we have them. On p15 the blob detector returned
-    // eight hits, all of them sky between laundry on a washing line, while the
-    // caption detector returned exactly the nine real captions.
+
     final captions = <int>[];
     for (var i = 0; i < page.balloons.length; i++) {
       if (page.balloons[i].isCaption) captions.add(i);
     }
+
+    // The question is not "is one panel big" - a normal page can open with a
+    // wide establishing panel, and issue 100 p16 (a clean four-panel page with
+    // a 53% top panel) was being read as a splash, which threw away the panel
+    // order and produced a tour of speech bubbles.
+    //
+    // The question is whether the panels SEPARATE the dialogue at all. If one
+    // panel holds nearly all of it, the panel structure is not carrying the
+    // narrative and text rows are the better guide.
+    final perPanel = <int, int>{};
+    for (final b in page.balloons) {
+      perPanel[b.panel] = (perPanel[b.panel] ?? 0) + 1;
+    }
+    var dominant = -1;
+    var most = 0;
+    perPanel.forEach((k, v) {
+      if (v > most) {
+        most = v;
+        dominant = k;
+      }
+    });
+    // A splash is narration on open ground: nearly all of its text is
+    // free-floating rather than in balloons. The trained detector separates
+    // those, so this is a direct signal rather than an inference from panel
+    // geometry - which mis-fired on any page opening with a wide panel.
+    final captionShare = page.balloons.isEmpty
+        ? 0.0
+        : captions.length / page.balloons.length;
+    final narration = captions.length >= 3 && captionShare >= 0.7;
+    final collapsed = page.confidence < 0.5;
+    if (!collapsed && !narration) return null;
+    if (dominant < 0 || dominant >= page.panels.length) dominant = 0;
+    // Prefer captions where we have them. On p15 the blob detector returned
+    // eight hits, all of them sky between laundry on a washing line, while the
+    // caption detector returned exactly the nine real captions.
     // Captions are the trustworthy source on a real splash, where the blob
     // detector returns noise. On a low-confidence page the blob detector is
     // usually fine and the captions are a minority - using them alone threw

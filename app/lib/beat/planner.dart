@@ -249,7 +249,33 @@ class BeatPlanner {
       merged.add(_Unit(units[g.first].panel, rect, balloons));
     }
 
-    return _finish(merged, page, viewport, pagePx);
+    // Two speakers may only become visible once panels are merged: on issue
+    // 100 p5 the bottom row is detected as six narrow panels holding one
+    // balloon each, so the left/right structure exists only in the group.
+    //
+    // Apply these in order of how clear the gap is, and stop at the target -
+    // splitting everything eligible pushed page 8 to eight beats.
+    final candidates = <MapEntry<int, List<_Unit>>>[];
+    for (var i = 0; i < merged.length; i++) {
+      final parts = _splitByDialogue(merged[i], page, viewport, pagePx);
+      if (parts.length > 1) candidates.add(MapEntry(i, parts));
+    }
+    candidates.sort((a, b) {
+      double gapOf(List<_Unit> p) => p[1].rect.l - p[0].rect.r + p[0].rect.w;
+      return gapOf(b.value).compareTo(gapOf(a.value));
+    });
+    final applied = <int, List<_Unit>>{};
+    var count = merged.length;
+    for (final c in candidates) {
+      if (count >= targetMax) break;
+      applied[c.key] = c.value;
+      count += c.value.length - 1;
+    }
+    final split = <_Unit>[];
+    for (var i = 0; i < merged.length; i++) {
+      split.addAll(applied[i] ?? [merged[i]]);
+    }
+    return _finish(split, page, viewport, pagePx);
   }
 
   List<Beat> _finish(List<_Unit> merged, PageGuide page, Size viewport,

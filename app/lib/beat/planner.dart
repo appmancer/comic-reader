@@ -126,6 +126,16 @@ class BeatPlanner {
       byPanel.putIfAbsent(page.balloons[i].panel, () => []).add(i);
     }
 
+    // 1. Splash pages have no panels: one image with narration floating over
+    //    it (Savage Dragon #1 p15). The detector still reports "panels", but
+    //    they are boundaries between blocks of text on black, so grouping by
+    //    them puts nine captions in one 62%-of-page beat. Detect the shape and
+    //    build units from the caption rows instead.
+    final splashUnits = _splashUnits(page, viewport, pagePx);
+    if (splashUnits != null) {
+      return _finish(splashUnits, page, viewport, pagePx);
+    }
+
     // 1. One unit per panel. A panel is only split when showing it whole
     //    would not magnify - a full-height column fills the screen but leaves
     //    the reader no better off than looking at the page. Ordinary panels
@@ -194,6 +204,11 @@ class BeatPlanner {
       merged.add(_Unit(units[g.first].panel, rect, balloons));
     }
 
+    return _finish(merged, page, viewport, pagePx);
+  }
+
+  List<Beat> _finish(List<_Unit> merged, PageGuide page, Size viewport,
+      Size pagePx) {
     // 3. Expand each beat toward the viewport shape, honouring the bleed caps.
     final beats = <Beat>[];
     final shown = <NRect>[];
@@ -281,6 +296,75 @@ class BeatPlanner {
       }
     }
     return out;
+  }
+
+  /// If one "panel" swamps the page while holding several captions, it is not
+  /// a panel. Returns caption-row units, or null when this is a normal page.
+  List<_Unit>? _splashUnits(PageGuide page, Size viewport, Size pagePx) {
+    if (page.balloons.length < 3) return null;
+    var dominant = -1;
+    for (var i = 0; i < page.panels.length; i++) {
+      if (page.panels[i].rect.area > 0.5) dominant = i;
+    }
+    if (dominant < 0) return null;
+    // Prefer captions where we have them. On p15 the blob detector returned
+    // eight hits, all of them sky between laundry on a washing line, while the
+    // caption detector returned exactly the nine real captions.
+    final captions = <int>[];
+    for (var i = 0; i < page.balloons.length; i++) {
+      if (page.balloons[i].isCaption) captions.add(i);
+    }
+    final source = captions.length >= 3
+        ? captions
+        : [for (var i = 0; i < page.balloons.length; i++) i];
+
+    // Do NOT require the text to sit inside the dominant panel: on a splash
+    // the narration is spread across the whole page, which is the point.
+    final inside = source;
+    if (inside.length < 3) return null;
+
+    // Band the captions into rows, then order left-to-right within a row.
+    final ordered = List<int>.from(inside)
+      ..sort((a, b) {
+        final ra = page.balloons[a].rect, rb = page.balloons[b].rect;
+        final dy = ra.cy.compareTo(rb.cy);
+        return dy != 0 ? dy : ra.cx.compareTo(rb.cx);
+      });
+    final rows = <List<int>>[];
+    for (final i in ordered) {
+      final r = page.balloons[i].rect;
+      if (rows.isNotEmpty) {
+        final last = rows.last
+            .map((j) => page.balloons[j].rect)
+            .reduce((x, y) => x.union(y));
+        if (r.cy <= last.b) {
+          rows.last.add(i);
+          continue;
+        }
+      }
+      rows.add([i]);
+    }
+    rows.sort((a, b) {
+      final ra = a.map((i) => page.balloons[i].rect).reduce((x, y) => x.union(y));
+      final rb = b.map((i) => page.balloons[i].rect).reduce((x, y) => x.union(y));
+      return ra.t.compareTo(rb.t);
+    });
+
+    final units = <_Unit>[];
+    // Establishing shot: the artwork above the first caption row.
+    final firstTop =
+        rows.first.map((i) => page.balloons[i].rect.t).reduce(math.min);
+    if (firstTop > 0.12) {
+      units.add(_Unit(dominant, NRect(0, 0, 1, firstTop), const []));
+    }
+    for (final row in rows) {
+      final r = row.map((i) => page.balloons[i].rect).reduce((x, y) => x.union(y));
+      units.add(_Unit(dominant,
+          NRect(math.max(0, r.l - 0.03), math.max(0, r.t - 0.02),
+              math.min(1, r.r + 0.03), math.min(1, r.b + 0.02)),
+          row));
+    }
+    return units;
   }
 
   /// Fold low-detail, dialogue-free groups into a neighbour.

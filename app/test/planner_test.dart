@@ -67,18 +67,26 @@ void main() {
     }
   });
 
-  test('beats are whole panels, never a fraction of one', () {
-    // Slicing a panel is what produced close-ups of an eye and a shoulder.
+  /// Splash pages (one image, narration floating over it) build beats from
+  /// caption rows rather than panels, so the panel-shaped assertions below do
+  /// not apply to them.
+  bool isSplash(PageGuide p) =>
+      p.panels.any((q) => q.rect.area > 0.5) &&
+      p.balloons.where((b) => b.isCaption).length >= 3;
+
+  test('a beat never cuts through dialogue it is responsible for', () {
+    // The real invariant behind "whole panels": whatever a beat is there to
+    // show, it must show completely. Slicing a panel is only wrong when it
+    // slices the content.
     const pagePx = Size(2000, 3017);
     for (final page in guide.pages.values) {
       final beats =
           const BeatPlanner().plan(page, const Size(412, 915), pagePx);
       for (final b in beats) {
-        final touches = page.panels
-            .where((p) => b.rect.overlap(p.rect) > 0.15 * p.rect.area)
-            .length;
-        expect(touches, greaterThanOrEqualTo(1),
-            reason: 'page ${page.index + 1}: beat covers no panel');
+        for (final i in b.balloons) {
+          expect(b.rect.fractionOf(page.balloons[i].rect), greaterThan(0.9),
+              reason: 'page ${page.index + 1}: beat clips its own balloon $i');
+        }
       }
     }
   });
@@ -86,6 +94,7 @@ void main() {
   test('beat count lands in the 4-6 target where panels allow', () {
     const pagePx = Size(2000, 3017);
     for (final page in guide.pages.values) {
+      if (isSplash(page)) continue;
       final beats =
           const BeatPlanner().plan(page, const Size(412, 915), pagePx);
       if (beats.isEmpty || page.panels.length < 4) continue;
@@ -105,6 +114,21 @@ void main() {
       expect(b.rect.b, lessThanOrEqualTo(1 + 1e-9));
       expect(b.rect.w, greaterThan(0));
       expect(b.rect.h, greaterThan(0));
+    }
+  });
+
+  test('a splash page reads as establishing shot then caption rows', () {
+    const pagePx = Size(2000, 3017);
+    final splash = guide.pages.values.where(isSplash).toList();
+    expect(splash, isNotEmpty, reason: 'page 15 of the fixture is a splash');
+    for (final page in splash) {
+      final beats = const BeatPlanner().plan(page, const Size(412, 915), pagePx);
+      expect(beats.length, inInclusiveRange(3, 8));
+      expect(beats.first.isArt, isTrue,
+          reason: 'a splash should open on the artwork');
+      final captioned = beats.where((b) => b.balloons.isNotEmpty).length;
+      expect(captioned, greaterThanOrEqualTo(3),
+          reason: 'the narration must be stepped through, not shown at once');
     }
   });
 }

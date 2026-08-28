@@ -56,16 +56,31 @@ class Balloon {
   /// read-time zoom: we scale so this lands at a legible size on screen.
   final double lineHeight;
 
-  const Balloon({required this.rect, required this.panel, this.lineHeight = 0});
+  /// 'balloon' (dark lettering in a bright blob) or 'caption' (bright
+  /// lettering straight onto a dark ground). On splash pages the blob detector
+  /// yields only noise while the caption detector is exact, so the planner
+  /// needs to know which found what.
+  final String kind;
+
+  bool get isCaption => kind == 'caption';
+
+  const Balloon({
+    required this.rect,
+    required this.panel,
+    this.lineHeight = 0,
+    this.kind = 'balloon',
+  });
 
   factory Balloon.fromJson(Map<String, dynamic> j) => Balloon(
         rect: NRect.fromJson(j['rect'] as List),
         panel: (j['panel'] as num?)?.toInt() ?? 0,
         lineHeight: (j['line_height'] as num?)?.toDouble() ?? 0,
+        kind: j['kind'] as String? ?? 'balloon',
       );
 
   Map<String, dynamic> toJson() =>
-      {'rect': rect.toJson(), 'panel': panel, 'line_height': lineHeight};
+      {'rect': rect.toJson(), 'panel': panel, 'line_height': lineHeight,
+       'kind': kind};
 }
 
 /// A panel. Order is the index in the list — the Python side emits them in

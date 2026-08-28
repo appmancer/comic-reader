@@ -11,6 +11,7 @@ if ROOT not in sys.path: sys.path.insert(0, ROOT)
 
 from cg.detect import load, text_regions, W, BRIGHT, DARK
 from cg.unchain import unchain
+from cg.invtext import inverse_text_regions
 import cg.xycut as X
 from cg.layout import best_layout
 
@@ -100,6 +101,24 @@ def analyse_page(path, index):
     balloons_raw = []
     for r in text_regions(raw, h):
         balloons_raw += unchain(raw, h, r)
+
+    # Captions with no balloon: white lettering straight onto a dark ground.
+    # The blob detector cannot see these at all - p15 found 0 of 9 captions and
+    # 8 false positives (laundry on a washing line) before this.
+    def _overlaps_any(r, rs, frac=0.35):
+        ra = max((r[2] - r[0]) * (r[3] - r[1]), 1)
+        for q in rs:
+            w = min(r[2], q[2]) - max(r[0], q[0])
+            hh = min(r[3], q[3]) - max(r[1], q[1])
+            if w > 0 and hh > 0 and (w * hh) / ra > frac:
+                return True
+        return False
+
+    caption_set = []
+    for r in inverse_text_regions(raw, h):
+        if not _overlaps_any(r, balloons_raw):
+            balloons_raw.append(r)
+            caption_set.append(r)
     # Candidate layouts scored against the balloons; no single threshold works
     # across pages (SD p10 needs a 75%-strength 19px gutter accepted, Absalom
     # needs 44% dark art rejected).
@@ -114,6 +133,10 @@ def analyse_page(path, index):
         "rect": n(b),
         "panel": owner_panel(b, panels),
         "line_height": round(line_height(raw, h, b), 5),
+        # Provenance matters: on splash pages the blob detector produces only
+        # noise (sky between laundry) while the inverse detector is exact, so
+        # the planner needs to know which found what.
+        "kind": "caption" if b in caption_set else "balloon",
     } for b in balloons_raw]
 
     # Confidence: a page where layout collapsed to one panel while carrying many

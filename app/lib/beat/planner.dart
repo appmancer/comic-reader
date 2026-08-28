@@ -29,7 +29,19 @@ class Beat {
   /// never skips part of the page.
   final bool isArt;
 
-  const Beat({required this.rect, required this.balloons, this.isArt = false});
+  /// The panel rectangles this beat is actually about. The renderer masks
+  /// everything else in the frame to the page's border colour, so a beat can
+  /// be framed generously without a neighbouring panel competing for
+  /// attention - which is what caused most of the "bleeds into the pane below"
+  /// complaints.
+  final List<NRect> focus;
+
+  const Beat({
+    required this.rect,
+    required this.balloons,
+    this.isArt = false,
+    this.focus = const [],
+  });
 
   @override
   String toString() =>
@@ -271,6 +283,7 @@ class BeatPlanner {
         rect: rect,
         balloons: u.balloons,
         isArt: u.balloons.isEmpty,
+        focus: [u.rect],
       ));
       shown.add(rect);
       seen.addAll(u.balloons);
@@ -278,7 +291,77 @@ class BeatPlanner {
         if (rect.fractionOf(page.balloons[i].rect) > 0.85) seen.add(i);
       }
     }
-    return beats;
+    return _coverPanels(beats, page, viewport, pagePx);
+  }
+
+  /// No part of the page may be skipped. A panel no beat reaches is folded
+  /// into the nearest beat, or becomes its own if it will not fit.
+  List<Beat> _coverPanels(
+      List<Beat> beats, PageGuide page, Size viewport, Size pagePx) {
+    if (beats.isEmpty) return beats;
+    // When layout collapsed there is one "panel" covering the page; covering it
+    // just adds a whole-page beat, which is worse than the gap it fixes.
+    if (page.confidence < 0.5 || page.panels.length <= 1) return beats;
+    final out = List<Beat>.from(beats);
+    for (final panel in page.panels) {
+      if (panel.rect.area < 0.045 || panel.rect.area > 0.6) continue;
+      // Coverage is the UNION of all beats, not the best single one: a column
+      // deliberately split into two beats is covered by neither alone, and
+      // measuring per-beat re-added it whole as a third.
+      var hit = 0, total = 0;
+      for (var gy = 0; gy < 8; gy++) {
+        for (var gx = 0; gx < 8; gx++) {
+          final px = panel.rect.l + panel.rect.w * (gx + 0.5) / 8;
+          final py = panel.rect.t + panel.rect.h * (gy + 0.5) / 8;
+          total++;
+          for (final b in out) {
+            if (px >= b.rect.l && px <= b.rect.r &&
+                py >= b.rect.t && py <= b.rect.b) {
+              hit++;
+              break;
+            }
+          }
+        }
+      }
+      if (hit / total >= 0.6) continue;
+
+      var target = -1;
+      var nearest = double.infinity;
+      for (var i = 0; i < out.length; i++) {
+        if (out[i].rect.union(panel.rect).area > maxBeatArea) continue;
+        final d = (out[i].rect.cy - panel.rect.cy).abs() +
+            (out[i].rect.cx - panel.rect.cx).abs();
+        if (d < nearest) {
+          nearest = d;
+          target = i;
+        }
+      }
+      if (target >= 0) {
+        out[target] = Beat(
+          rect: out[target].rect.union(panel.rect),
+          balloons: out[target].balloons,
+          isArt: out[target].isArt,
+          focus: [...out[target].focus, panel.rect],
+        );
+      } else {
+        // Insert in reading position rather than re-sorting the whole list:
+        // a global sort reordered two correct beats whose centres straddled a
+        // band boundary.
+        var at = out.length;
+        for (var i = 0; i < out.length; i++) {
+          if (out[i].rect.cy > panel.rect.cy + 0.05 ||
+              (out[i].rect.cy > panel.rect.cy - 0.05 &&
+                  out[i].rect.cx > panel.rect.cx)) {
+            at = i;
+            break;
+          }
+        }
+        out.insert(at, Beat(
+            rect: panel.rect, balloons: const [], isArt: true,
+            focus: [panel.rect]));
+      }
+    }
+    return out;
   }
 
   int _tilingNeighbour(List<_Unit> units, int i) {
@@ -433,7 +516,14 @@ class BeatPlanner {
     for (var i = 0; i < page.balloons.length; i++) {
       if (page.balloons[i].isCaption) captions.add(i);
     }
-    final source = captions.length >= 3
+    // Captions are the trustworthy source on a real splash, where the blob
+    // detector returns noise. On a low-confidence page the blob detector is
+    // usually fine and the captions are a minority - using them alone threw
+    // away 12 of 18 balloons on issue 100 p13 and showed caption fragments.
+    // A page whose layout collapsed ALSO has a dominant panel, so panel size
+    // cannot tell a real splash from a detection failure. Confidence can.
+    final trueSplash = page.confidence >= 0.5;
+    final source = (trueSplash && captions.length >= 3)
         ? captions
         : [for (var i = 0; i < page.balloons.length; i++) i];
 

@@ -30,6 +30,11 @@ class _ReaderPageState extends State<ReaderPage>
   int _pageIndex = 0;
   ui.Image? _image;
 
+  /// Colour of the page's own border, used to mask out everything a beat is
+  /// not about. Sampled from the rendered page so it matches whatever the
+  /// printer used - black on most Savage Dragon pages, white on Absalom.
+  Color _border = Colors.black;
+
   /// -1 = whole page before the beats, 0..n-1 = beats, n = whole page after.
   int _step = -1;
   List<Beat> _beats = const [];
@@ -87,9 +92,11 @@ class _ReaderPageState extends State<ReaderPage>
         img.dispose();
         return;
       }
+      final border = await _sampleBorder(img);
       _image?.dispose();
       setState(() {
         _pageIndex = index;
+        _border = border;
         _image = img;
         _step = -1;
         _beats = const [];
@@ -98,6 +105,35 @@ class _ReaderPageState extends State<ReaderPage>
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     }
+  }
+
+  /// Modal colour of the page's outer edge.
+  Future<Color> _sampleBorder(ui.Image img) async {
+    final data = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
+    if (data == null) return Colors.black;
+    final w = img.width, h = img.height;
+    final counts = <int, int>{};
+    void take(int x, int y) {
+      final o = (y * w + x) * 4;
+      if (o < 0 || o + 3 >= data.lengthInBytes) return;
+      // quantise so near-identical shades group together
+      final r = data.getUint8(o) & 0xF0;
+      final g = data.getUint8(o + 1) & 0xF0;
+      final b = data.getUint8(o + 2) & 0xF0;
+      final key = (r << 16) | (g << 8) | b;
+      counts[key] = (counts[key] ?? 0) + 1;
+    }
+    for (var x = 0; x < w; x += 4) {
+      take(x, 1);
+      take(x, h - 2);
+    }
+    for (var y = 0; y < h; y += 4) {
+      take(1, y);
+      take(w - 2, y);
+    }
+    if (counts.isEmpty) return Colors.black;
+    final best = counts.entries.reduce((a, b) => a.value >= b.value ? a : b).key;
+    return Color(0xFF000000 | best);
   }
 
   void _replan() {
@@ -204,6 +240,14 @@ class _ReaderPageState extends State<ReaderPage>
     );
   }
 
+  /// Panels the current beat is about; empty means show the frame unmasked
+  /// (whole-page steps, and while a transition is running).
+  List<NRect> get _maskFocus {
+    if (_anim.isAnimating) return const [];
+    if (_step < 0 || _step >= _beats.length) return const [];
+    return _beats[_step].focus;
+  }
+
   String _stepLabel() {
     if (_step < 0) return 'full page';
     if (_step >= _beats.length) return 'full page';
@@ -237,7 +281,12 @@ class _ReaderPageState extends State<ReaderPage>
           animation: _anim,
           builder: (_, _) => CustomPaint(
             size: Size.infinite,
-            painter: _PagePainter(image: img, view: _current),
+            painter: _PagePainter(
+              image: img,
+              view: _current,
+              focus: _maskFocus,
+              border: _border,
+            ),
           ),
         ),
       );
@@ -248,8 +297,15 @@ class _ReaderPageState extends State<ReaderPage>
 class _PagePainter extends CustomPainter {
   final ui.Image image;
   final NRect view;
+  final List<NRect> focus;
+  final Color border;
 
-  _PagePainter({required this.image, required this.view});
+  _PagePainter({
+    required this.image,
+    required this.view,
+    this.focus = const [],
+    this.border = Colors.black,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -275,11 +331,28 @@ class _PagePainter extends CustomPainter {
       dst,
       Paint()..filterQuality = FilterQuality.medium,
     );
+
+    if (focus.isEmpty) return;
+    // Paint out everything the beat is not about, in the page's own border
+    // colour, so an adjacent panel cannot compete for attention.
+    final keep = Path();
+    for (final f in focus) {
+      final l = dst.left + (f.l - view.l) / view.w * dst.width;
+      final t = dst.top + (f.t - view.t) / view.h * dst.height;
+      final r = dst.left + (f.r - view.l) / view.w * dst.width;
+      final b = dst.top + (f.b - view.t) / view.h * dst.height;
+      keep.addRect(Rect.fromLTRB(l, t, r, b));
+    }
+    final mask = Path.combine(PathOperation.difference,
+        Path()..addRect(Rect.fromLTWH(0, 0, size.width, size.height)), keep);
+    canvas.drawPath(mask, Paint()..color = border);
   }
 
   @override
   bool shouldRepaint(_PagePainter old) =>
       old.image != image ||
+      old.focus.length != focus.length ||
+      old.border != border ||
       old.view.l != view.l ||
       old.view.t != view.t ||
       old.view.r != view.r ||

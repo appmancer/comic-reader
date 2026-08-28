@@ -31,7 +31,13 @@ def line_height(raw, h, r):
             runs.append(y - start); start = None
     if start is not None:
         runs.append(y1 - start)
-    runs = [r_ for r_ in runs if r_ >= 2]
+    # A line of comic lettering is roughly 1-3% of page height. Runs outside
+    # that band are noise (JPEG speckle at the low end, a whole balloon or a
+    # solid dark region at the high end) and produced values like 0.0028 and
+    # 0.0881 that drove the planner to absurd zoom levels. Report 0 = unknown
+    # rather than a wrong number; the planner treats 0 as "no constraint".
+    lo, hi = max(3, int(0.006 * h)), int(0.06 * h)
+    runs = [r_ for r_ in runs if lo <= r_ <= hi]
     return (statistics.median(runs) / h) if runs else 0.0
 
 

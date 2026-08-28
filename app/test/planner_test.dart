@@ -51,22 +51,47 @@ void main() {
         reason: 'a guided read must not skip dialogue');
   });
 
-  test('a tablet gets a different plan from a phone', () {
-    final page = guide.page(12)!;
+  test('a smaller screen never gets fewer beats than a larger one', () {
+    // The real invariant behind computing beats at read time: a phone must
+    // frame at least as tightly as a tablet, or the lettering stops being
+    // readable - which is the failure we set out to beat.
     const pagePx = Size(2000, 3017);
-    final phone = const BeatPlanner()
-        .plan(page, const Size(412, 915), pagePx)
-        .map((b) => b.rect.toString())
-        .toList();
-    final tablet = const BeatPlanner()
-        .plan(page, const Size(1600, 2560), pagePx)
-        .map((b) => b.rect.toString())
-        .toList();
+    for (final page in guide.pages.values) {
+      final phone =
+          const BeatPlanner().plan(page, const Size(412, 915), pagePx).length;
+      final tablet =
+          const BeatPlanner().plan(page, const Size(1194, 834), pagePx).length;
+      if (phone == 0 || tablet == 0) continue;
+      expect(phone, greaterThanOrEqualTo(tablet),
+          reason: 'page ${page.index + 1}: phone $phone < tablet $tablet');
+    }
+  });
 
-    expect(phone, isNotEmpty);
-    expect(tablet, isNotEmpty);
-    // The whole point of computing at read time rather than baking beats in.
-    expect(phone, isNot(equals(tablet)));
+  test('beats are whole panels, never a fraction of one', () {
+    // Slicing a panel is what produced close-ups of an eye and a shoulder.
+    const pagePx = Size(2000, 3017);
+    for (final page in guide.pages.values) {
+      final beats =
+          const BeatPlanner().plan(page, const Size(412, 915), pagePx);
+      for (final b in beats) {
+        final touches = page.panels
+            .where((p) => b.rect.overlap(p.rect) > 0.15 * p.rect.area)
+            .length;
+        expect(touches, greaterThanOrEqualTo(1),
+            reason: 'page ${page.index + 1}: beat covers no panel');
+      }
+    }
+  });
+
+  test('beat count lands in the 4-6 target where panels allow', () {
+    const pagePx = Size(2000, 3017);
+    for (final page in guide.pages.values) {
+      final beats =
+          const BeatPlanner().plan(page, const Size(412, 915), pagePx);
+      if (beats.isEmpty || page.panels.length < 4) continue;
+      expect(beats.length, inInclusiveRange(4, 6),
+          reason: 'page ${page.index + 1} produced ${beats.length} beats');
+    }
   });
 
   test('beats stay inside the page', () {

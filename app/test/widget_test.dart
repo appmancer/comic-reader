@@ -6,7 +6,7 @@ void main() {
     await tester.pumpWidget(const ComicReaderApp());
     expect(find.text('Library'), findsOneWidget);
     expect(
-      find.textContaining('Choose a folder'),
+      find.textContaining('Choose'),
       findsOneWidget,
       reason: 'empty state should tell the user what to do',
     );

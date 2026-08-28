@@ -12,6 +12,16 @@ if ROOT not in sys.path: sys.path.insert(0, ROOT)
 from cg.detect import load, text_regions, W, BRIGHT, DARK
 from cg.unchain import unchain
 from cg.invtext import inverse_text_regions
+
+# Trained detector, when the model and onnxruntime are available. It replaces
+# the hand-tuned threshold stack: measured on seven reference pages it is exact
+# where that stack failed worst (a cover: 0 vs 26 false positives; a dense
+# splash: 2 vs 29) and finds page-15's nine captions that needed invtext.py.
+try:
+    from cg.mldetect import detect as ml_detect
+    ML_AVAILABLE = True
+except Exception:
+    ML_AVAILABLE = False
 import cg.xycut as X
 from cg.layout import best_layout
 
@@ -96,8 +106,26 @@ def owner_panel(rect, panels):
                            + (cy - (panels[i][1] + panels[i][3]) / 2) ** 2)
 
 
-def analyse_page(path, index):
+def ml_regions(path, raw, h):
+    """Trained-detector boxes in the pixel space the rest of the pipeline uses."""
+    out, captions = [], []
+    for cls, score, (x0, y0, x1, y1) in ml_detect(path):
+        box = (int(x0 * W), int(y0 * h), int(x1 * W), int(y1 * h))
+        if box[2] - box[0] < 6 or box[3] - box[1] < 5:
+            continue
+        if cls == "bubble":
+            out.append(box)
+        elif cls == "text_free":
+            out.append(box)
+            captions.append(box)
+    return out, captions
+
+
+def analyse_page(path, index, use_ml=True):
     raw, h = load(path)
+    if use_ml and ML_AVAILABLE:
+        balloons_raw, caption_set = ml_regions(path, raw, h)
+        return _finish_page(path, raw, h, index, balloons_raw, caption_set)
     balloons_raw = []
     for r in text_regions(raw, h):
         balloons_raw += unchain(raw, h, r)
@@ -119,6 +147,10 @@ def analyse_page(path, index):
         if not _overlaps_any(r, balloons_raw):
             balloons_raw.append(r)
             caption_set.append(r)
+    return _finish_page(path, raw, h, index, balloons_raw, caption_set)
+
+
+def _finish_page(path, raw, h, index, balloons_raw, caption_set):
     # Candidate layouts scored against the balloons; no single threshold works
     # across pages (SD p10 needs a 75%-strength 19px gutter accepted, Absalom
     # needs 44% dark art rejected).

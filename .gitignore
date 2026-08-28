@@ -2,6 +2,8 @@ work/
 __pycache__/
 *.pyc
 samples/
+.venv/
+models/
 
 # Flutter / Dart
 app/build/

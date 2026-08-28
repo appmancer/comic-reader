@@ -46,6 +46,21 @@ class BeatPlanner {
   /// panel across beats reads badly.
   final double maxBeatArea;
 
+  /// A beat must magnify to earn its place. Gain is its displayed scale over
+  /// the whole-page scale; below this we slice it, because a beat that shows
+  /// the reader the same size they already had is a wasted tap.
+  ///
+  /// This is what distinguishes a full-height column - scale-limited by height,
+  /// so gain ~1.5 no matter how narrow it is - from an ordinary panel, which
+  /// already lands around 3.5x and must NOT be sliced.
+  final double minGain;
+
+  /// EXPERIMENTAL. When true, an art beat (no dialogue) whose edge detail is
+  /// well below the page median is merged into a neighbour instead of claiming
+  /// a tap of its own. Unvalidated - it measures texture, not importance, and
+  /// would discard a deliberately empty panel. Off by default.
+  final bool useDetail;
+
   /// Target number of focus points per page.
   final int targetMin;
   final int targetMax;
@@ -59,6 +74,8 @@ class BeatPlanner {
   const BeatPlanner({
     this.minLineHeightPx = 13.0,
     this.maxBeatArea = 0.34,
+    this.minGain = 2.0,
+    this.useDetail = false,
     this.targetMin = 4,
     this.targetMax = 6,
     this.forwardBleed = 0.20,
@@ -74,6 +91,17 @@ class BeatPlanner {
     final h = rect.h * pagePx.height;
     if (w <= 0 || h <= 0) return 0;
     return math.min(viewport.width / w, viewport.height / h);
+  }
+
+  /// A tall, narrow region can never magnify: its scale is pinned by height.
+  bool _tallAndNarrow(NRect r) => r.h >= 0.75 && r.w <= 0.55;
+
+  /// Magnification of [rect] relative to viewing the whole page.
+  double _gain(NRect rect, Size viewport, Size pagePx) {
+    final pageScale = math.min(
+        viewport.width / pagePx.width, viewport.height / pagePx.height);
+    if (pageScale <= 0) return 1;
+    return _scaleFor(rect, viewport, pagePx) / pageScale;
   }
 
   /// Does [rect] keep every balloon in [focus] readable?
@@ -98,11 +126,42 @@ class BeatPlanner {
       byPanel.putIfAbsent(page.balloons[i].panel, () => []).add(i);
     }
 
-    // 1. One unit per panel. Never split a panel across beats: slicing one is
-    //    what produced close-ups of an eye, a mouth and a shoulder.
+    // 1. One unit per panel. A panel is only split when showing it whole
+    //    would not magnify - a full-height column fills the screen but leaves
+    //    the reader no better off than looking at the page. Ordinary panels
+    //    already clear minGain comfortably and stay intact, which is what
+    //    stops us slicing a face into an eye, a mouth and a shoulder.
     final units = <_Unit>[];
     for (var pi = 0; pi < page.panels.length; pi++) {
-      units.add(_Unit(pi, page.panels[pi].rect, byPanel[pi] ?? const <int>[]));
+      final rect = page.panels[pi].rect;
+      final ids = byPanel[pi] ?? const <int>[];
+      // Only tall panels. A full-width panel also scores gain ~1 on a portrait
+      // screen, but slicing it left/right cuts the composition in half - the
+      // page was laid out to be read at that width. A column was not.
+      final tallPanel = rect.h * pagePx.height > rect.w * pagePx.width * 1.2;
+      final gain = _gain(rect, viewport, pagePx);
+      var k = 1;
+      if (tallPanel && gain < minGain) {
+        k = math.min(3, (minGain / math.max(gain, 0.01)).ceil());
+      }
+      if (k <= 1) {
+        units.add(_Unit(pi, rect, ids));
+        continue;
+      }
+      for (var i = 0; i < k; i++) {
+        final part = NRect(rect.l, rect.t + rect.h * i / k, rect.r,
+            rect.t + rect.h * (i + 1) / k);
+        units.add(_Unit(
+            pi,
+            part,
+            ids
+                .where((j) =>
+                    page.balloons[j].rect.cx >= part.l &&
+                    page.balloons[j].rect.cx <= part.r &&
+                    page.balloons[j].rect.cy >= part.t &&
+                    page.balloons[j].rect.cy <= part.b)
+                .toList()));
+      }
     }
 
     // 1b. Absorb sliver panels into a neighbour. A 1.5%-of-page strip is
@@ -121,6 +180,7 @@ class BeatPlanner {
     //    four equal panels became 3 + 1 instead of 2 + 2.
     var grouped = _bestGrouping(units, page, viewport, pagePx);
     grouped = _mergeAdjacent(grouped, units, page, viewport, pagePx);
+    if (useDetail) grouped = _dropDullArt(grouped, units, page);
 
     final merged = <_Unit>[];
     for (final g in grouped) {
@@ -202,6 +262,8 @@ class BeatPlanner {
         if (b.first != a.last + 1) continue; // not contiguous in reading order
         final rect = _unionOf(units, a.first, b.last + 1);
         if (rect.area > maxBeatArea) continue;
+        // Never merge back into a full-height column.
+        if (_tallAndNarrow(rect)) continue;
         final focus = [
           for (final i2 in [...a, ...b])
             ...units[i2].balloons.map((j) => page.balloons[j])
@@ -216,6 +278,34 @@ class BeatPlanner {
         out[bestI] = [...out[bestI], ...out[bestI + 1]];
         out.removeAt(bestI + 1);
         changed = true;
+      }
+    }
+    return out;
+  }
+
+  /// Fold low-detail, dialogue-free groups into a neighbour.
+  List<List<int>> _dropDullArt(
+      List<List<int>> groups, List<_Unit> units, PageGuide page) {
+    final grid = page.detail;
+    if (grid == null || groups.length <= targetMin) return groups;
+
+    final scores = <int, double>{};
+    for (var i = 0; i < groups.length; i++) {
+      scores[i] = grid.over(_unionOf(units, groups[i].first, groups[i].last + 1));
+    }
+    final sorted = scores.values.toList()..sort();
+    final median = sorted[sorted.length ~/ 2];
+
+    final out = <List<int>>[];
+    for (var i = 0; i < groups.length; i++) {
+      final hasDialogue =
+          groups[i].any((u) => units[u].balloons.isNotEmpty);
+      final dull = scores[i]! < median * 0.72;
+      if (!hasDialogue && dull && out.isNotEmpty &&
+          out.length + (groups.length - i - 1) >= targetMin) {
+        out.last.addAll(groups[i]); // fold into the previous beat
+      } else {
+        out.add(List<int>.from(groups[i]));
       }
     }
     return out;
@@ -236,9 +326,17 @@ class BeatPlanner {
   NRect _unionOf(List<_Unit> units, int a, int b) =>
       units.sublist(a, b).map((u) => u.rect).reduce((x, y) => x.union(y));
 
-  bool _groupAllowed(List<_Unit> units, int a, int b) {
+  bool _groupAllowed(List<_Unit> units, int a, int b, Size viewport,
+      Size pagePx) {
     if (b - a <= 1) return true; // a lone panel is always a valid beat
-    return _unionOf(units, a, b).area <= maxBeatArea;
+    final rect = _unionOf(units, a, b);
+    if (rect.area > maxBeatArea) return false;
+    // Without this the DP happily reassembles a sliced column into one
+    // full-height group again, undoing the slice we just made. Targeting the
+    // shape directly beats tuning a gain threshold: a gain cut-off high enough
+    // to block a full-height column also blocked legitimate side-by-side
+    // merges at gain 1.93.
+    return !_tallAndNarrow(rect);
   }
 
   double _groupCost(List<_Unit> units, int a, int b, double target,
@@ -288,7 +386,7 @@ class BeatPlanner {
       for (var j = 1; j <= k; j++) {
         for (var a = j - 1; a < i; a++) {
           if (dp[a][j - 1] == double.infinity) continue;
-          if (!_groupAllowed(units, a, i)) continue;
+          if (!_groupAllowed(units, a, i, viewport, pagePx)) continue;
           final c = dp[a][j - 1] +
               _groupCost(units, a, i, target, page, viewport, pagePx);
           if (c < dp[i][j]) {

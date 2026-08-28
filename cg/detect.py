@@ -76,7 +76,9 @@ def text_regions(raw,h):
         if not (0.14<fill<0.80): continue
         if not (0.35<bw/bh<11.0): continue
         ink,flat,lines,rhythm = stats(raw,h,(x0,y0,x1,y1))
-        if not (0.05<ink<0.45): continue
+        # Short balloons with big bold lettering ("MOM?") run to ~60% ink. The
+        # old 0.45 cap silently dropped them - page 12 found 1 balloon of 4.
+        if not (0.05<ink<0.70): continue
         if flat > FLAT_MAX: continue
         if lines<1: continue
         pass  # rhythm test removed: kills stacked balloon pairs

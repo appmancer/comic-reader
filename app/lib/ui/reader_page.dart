@@ -42,7 +42,11 @@ class _ReaderPageState extends State<ReaderPage>
   NRect _to = const NRect(0, 0, 1, 1);
 
   final _store = GuideStore();
-  final _planner = const BeatPlanner();
+
+  /// EXPERIMENTAL detail-density filter, toggled from the app bar so it can be
+  /// compared on real pages rather than the one it was tuned against.
+  bool _useDetail = false;
+  BeatPlanner get _planner => BeatPlanner(useDetail: _useDetail);
 
   @override
   void initState() {
@@ -94,6 +98,14 @@ class _ReaderPageState extends State<ReaderPage>
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     }
+  }
+
+  void _replan() {
+    setState(() {
+      _beats = const [];
+      _step = -1;
+      _from = _to = const NRect(0, 0, 1, 1);
+    });
   }
 
   void _planIfNeeded(Size viewport) {
@@ -160,6 +172,19 @@ class _ReaderPageState extends State<ReaderPage>
         title: Text(title, overflow: TextOverflow.ellipsis),
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            tooltip: _useDetail
+                ? 'Detail filter ON (experimental)'
+                : 'Detail filter off',
+            icon: Icon(_useDetail ? Icons.auto_awesome : Icons.auto_awesome_outlined),
+            color: _useDetail ? Colors.amberAccent : Colors.white70,
+            onPressed: () {
+              _useDetail = !_useDetail;
+              _replan();
+            },
+          ),
+        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(20),
           child: Padding(
@@ -168,7 +193,8 @@ class _ReaderPageState extends State<ReaderPage>
               total == 0
                   ? ''
                   : 'page ${_pageIndex + 1} / $total'
-                      '${guided ? '   ·   ${_stepLabel()}' : '   ·   no guide'}',
+                      '${guided ? '   ·   ${_stepLabel()}' : '   ·   no guide'}'
+                      '${_useDetail ? '   ·   detail' : ''}',
               style: const TextStyle(color: Colors.white70, fontSize: 12),
             ),
           ),

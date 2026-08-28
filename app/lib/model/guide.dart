@@ -81,6 +81,41 @@ class Panel {
   Map<String, dynamic> toJson() => {'rect': rect.toJson()};
 }
 
+/// Coarse edge-density grid over the page. SPECULATIVE - see cg/export.py.
+class DetailGrid {
+  final int w, h;
+  final List<int> cells;
+  const DetailGrid({required this.w, required this.h, required this.cells});
+
+  factory DetailGrid.fromJson(Map<String, dynamic> j) => DetailGrid(
+        w: (j['w'] as num).toInt(),
+        h: (j['h'] as num).toInt(),
+        cells: (j['cells'] as List).map((c) => (c as num).toInt()).toList(),
+      );
+
+  Map<String, dynamic> toJson() => {'w': w, 'h': h, 'cells': cells};
+
+  /// Mean detail over a normalised rect, 0-255.
+  double over(NRect r) {
+    var total = 0.0;
+    var n = 0;
+    for (var gy = 0; gy < h; gy++) {
+      final cy = (gy + 0.5) / h;
+      if (cy < r.t || cy > r.b) continue;
+      for (var gx = 0; gx < w; gx++) {
+        final cx = (gx + 0.5) / w;
+        if (cx < r.l || cx > r.r) continue;
+        final i = gy * w + gx;
+        if (i < cells.length) {
+          total += cells[i];
+          n++;
+        }
+      }
+    }
+    return n == 0 ? 0 : total / n;
+  }
+}
+
 class PageGuide {
   final int index;
   final List<Panel> panels;
@@ -90,11 +125,14 @@ class PageGuide {
   /// showing the whole page rather than guiding badly.
   final double confidence;
 
+  final DetailGrid? detail;
+
   const PageGuide({
     required this.index,
     required this.panels,
     required this.balloons,
     this.confidence = 1.0,
+    this.detail,
   });
 
   factory PageGuide.fromJson(Map<String, dynamic> j) => PageGuide(
@@ -106,6 +144,9 @@ class PageGuide {
             .map((b) => Balloon.fromJson(b as Map<String, dynamic>))
             .toList(),
         confidence: (j['confidence'] as num?)?.toDouble() ?? 1.0,
+        detail: j['detail'] == null
+            ? null
+            : DetailGrid.fromJson(j['detail'] as Map<String, dynamic>),
       );
 
   Map<String, dynamic> toJson() => {
@@ -113,6 +154,7 @@ class PageGuide {
         'panels': panels.map((p) => p.toJson()).toList(),
         'balloons': balloons.map((b) => b.toJson()).toList(),
         'confidence': confidence,
+        if (detail != null) 'detail': detail!.toJson(),
       };
 }
 

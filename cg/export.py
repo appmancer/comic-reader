@@ -41,6 +41,48 @@ def line_height(raw, h, r):
     return (statistics.median(runs) / h) if runs else 0.0
 
 
+DETAIL_GW, DETAIL_GH = 12, 18
+
+
+def detail_grid(raw, h, gw=DETAIL_GW, gh=DETAIL_GH, box=8):
+    """Edge density per cell, 0-255. A proxy for "is there anything here".
+
+    Flat sky, shadow and grass score low; faces, hands, machinery and lettering
+    score high. Measured at a coarse scale (box=8) so fine texture averages
+    away: at full resolution grass outscored everything on Savage Dragon p12,
+    which is the opposite of useful.
+
+    SPECULATIVE AND UNVALIDATED. It only agreed with human judgement on that
+    page at the coarsest setting and by a 13% margin, which may be tuning
+    rather than signal. A deliberately empty, ominous panel is exactly the
+    storytelling beat it would wrongly discard. Off by default in the planner.
+    """
+    def avg(x, y):
+        t = n = 0
+        for dy in range(box):
+            for dx in range(box):
+                t += raw[min(y + dy, h - 1) * W + min(x + dx, W - 1)]
+                n += 1
+        return t / n
+
+    grid = []
+    for gy in range(gh):
+        y0, y1 = gy * h // gh, (gy + 1) * h // gh
+        for gx in range(gw):
+            x0, x1 = gx * W // gw, (gx + 1) * W // gw
+            edges = n = 0
+            for y in range(y0, y1, 2 * box):
+                prev = None
+                for x in range(x0, x1, 2 * box):
+                    v = avg(x, y)
+                    if prev is not None and abs(v - prev) > 28:
+                        edges += 1
+                    prev = v
+                    n += 1
+            grid.append(min(255, round(600.0 * edges / max(n, 1))))
+    return grid
+
+
 def owner_panel(rect, panels):
     cx, cy = (rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2
     for i, p in enumerate(panels):
@@ -85,6 +127,8 @@ def analyse_page(path, index):
     return {
         "index": index,
         "layout": chosen,
+        "detail": {"w": DETAIL_GW, "h": DETAIL_GH,
+                   "cells": detail_grid(raw, h)},
         "panels": [{"rect": n(p)} for p in panels],
         "balloons": balloons,
         "confidence": conf,

@@ -12,6 +12,7 @@ if ROOT not in sys.path: sys.path.insert(0, ROOT)
 from cg.detect import load, text_regions, W, BRIGHT, DARK
 from cg.unchain import unchain
 import cg.xycut as X
+from cg.layout import best_layout
 
 SCHEMA_VERSION = 1
 
@@ -51,7 +52,11 @@ def analyse_page(path, index):
     balloons_raw = []
     for r in text_regions(raw, h):
         balloons_raw += unchain(raw, h, r)
-    panels = X.split(raw, h, X.trim(raw, h)) or [(0, 0, W, h)]
+    # Candidate layouts scored against the balloons; no single threshold works
+    # across pages (SD p10 needs a 75%-strength 19px gutter accepted, Absalom
+    # needs 44% dark art rejected).
+    panels, chosen, _score, _all = best_layout(raw, h, balloons_raw)
+    panels = panels or [(0, 0, W, h)]
 
     def n(rect):
         return [round(rect[0] / W, 5), round(rect[1] / h, 5),
@@ -73,6 +78,7 @@ def analyse_page(path, index):
 
     return {
         "index": index,
+        "layout": chosen,
         "panels": [{"rect": n(p)} for p in panels],
         "balloons": balloons,
         "confidence": conf,
@@ -120,8 +126,9 @@ def main():
     for name in names:
         idx = int(''.join(c for c in name if c.isdigit())) - 1  # pdftoppm is 1-based
         pages.append(analyse_page(os.path.join(work, name), idx))
-        print(f"  page {idx+1}: {len(pages[-1]['panels'])} panels, "
-              f"{len(pages[-1]['balloons'])} balloons, conf {pages[-1]['confidence']}")
+        print(f"  page {idx+1}: {len(pages[-1]['panels'])} panels "
+              f"({pages[-1]['layout']}), {len(pages[-1]['balloons'])} balloons, "
+              f"conf {pages[-1]['confidence']}")
 
     guide = {
         "version": SCHEMA_VERSION,

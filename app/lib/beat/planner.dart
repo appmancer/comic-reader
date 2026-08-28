@@ -41,6 +41,11 @@ class BeatPlanner {
   /// it stops being comfortable; this is the knob a "text size" setting turns.
   final double minLineHeightPx;
 
+  /// Largest share of the page a single beat may cover. Legibility alone does
+  /// not bound a beat with no dialogue in it - nothing keeps it from swallowing
+  /// half the page - so art panels need a geometric limit as well.
+  final double maxBeatArea;
+
   /// Caps, as fractions of an individual balloon's area.
   final double forwardBleed;
   final double backwardBleed;
@@ -49,6 +54,7 @@ class BeatPlanner {
 
   const BeatPlanner({
     this.minLineHeightPx = 13.0,
+    this.maxBeatArea = 0.34,
     this.forwardBleed = 0.20,
     this.backwardBleed = 0.12,
     this.minOwnPanelShare = 0.50,
@@ -93,7 +99,8 @@ class BeatPlanner {
 
       var slices = 1;
       while (slices < 6 &&
-          !_legible(_slice(panel, slices, 0), focus, viewport, pagePx)) {
+          (_slice(panel, slices, 0).area > maxBeatArea ||
+              !_legible(_slice(panel, slices, 0), focus, viewport, pagePx))) {
         slices++;
       }
       if (slices == 1) {
@@ -121,7 +128,7 @@ class BeatPlanner {
       final focus = [...last.balloons, ...u.balloons]
           .map((i) => page.balloons[i])
           .toList();
-      if (_legible(union, focus, viewport, pagePx)) {
+      if (union.area <= maxBeatArea && _legible(union, focus, viewport, pagePx)) {
         merged[merged.length - 1] =
             _Unit(last.panel, union, [...last.balloons, ...u.balloons]);
       } else {

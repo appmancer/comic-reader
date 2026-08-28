@@ -102,7 +102,14 @@ class _ReaderPageState extends State<ReaderPage>
     if (page == null) return;
     final pagePx = Size(_image!.width.toDouble(), _image!.height.toDouble());
     final beats = _planner.plan(page, viewport, pagePx);
-    if (beats.isNotEmpty) _beats = beats;
+    if (beats.isEmpty) return;
+    _beats = beats;
+    // Planning happens during layout, so the app bar was already built with the
+    // stale value and would read "no guide" until something else triggered a
+    // rebuild. Schedule one.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() {});
+    });
   }
 
   void _goTo(NRect target) {

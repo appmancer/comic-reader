@@ -64,9 +64,39 @@ def stats(raw,h,b):
     rhythm = (statistics.pstdev(runs)/statistics.mean(runs)) if len(runs)>=2 else 0.0
     return dark/max(tot,1), flat, len(runs), rhythm
 
+def suppress_gutters(raw, h, thresh=0.90):
+    """Blank out full-span bright bands before labelling.
+
+    A balloon drawn against a panel edge merges with the white gutter behind
+    it - they are both bright and directly adjacent, with no dark boundary.
+    On issue 100 page 16 that produced one component covering 17% of the page,
+    which was discarded as background, losing the balloon inside it.
+
+    Gutters are exactly the full-span bright bands we already find for layout,
+    so neutralise them here: set to mid-grey, which is neither bright nor dark.
+    """
+    # Measure across the CONTENT box, not the whole page: these pages have dark
+    # margins, so no row ever reaches the threshold across the full width.
+    cx0, cy0, cx1, cy1 = content_box(raw, h)
+    cw = max(cx1 - cx0, 1)
+    ch = max(cy1 - cy0, 1)
+    out = bytearray(raw)
+    for y in range(cy0, cy1):
+        row = raw[y * W:(y + 1) * W]
+        if sum(1 for x in range(cx0, cx1) if row[x] >= BRIGHT) / cw >= thresh:
+            for x in range(W):
+                out[y * W + x] = 150
+    for x in range(cx0, cx1):
+        if sum(1 for y in range(cy0, cy1) if raw[y * W + x] >= BRIGHT) / ch >= thresh:
+            for y in range(h):
+                out[y * W + x] = 150
+    return bytes(out)
+
+
 def text_regions(raw,h):
     page=W*h; out=[]
-    for c in components(raw,h).values():
+    masked = suppress_gutters(raw, h)
+    for c in components(masked,h).values():
         x0,y0,x1,y1,a=c
         bw,bh=x1-x0,y1-y0+1
         if bw<20 or bh<9: continue

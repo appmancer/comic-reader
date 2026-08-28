@@ -192,6 +192,9 @@ class _ReaderPageState extends State<ReaderPage>
       }
       return;
     }
+    _prevFocus = (_step >= 0 && _step < _beats.length)
+        ? _beats[_step].focus
+        : const [];
     setState(() => _step = next);
     _goTo(next < 0 || next >= last ? whole : _beats[next].rect);
   }
@@ -240,12 +243,21 @@ class _ReaderPageState extends State<ReaderPage>
     );
   }
 
-  /// Panels the current beat is about; empty means show the frame unmasked
-  /// (whole-page steps, and while a transition is running).
+  /// Panels to keep visible. During a transition we keep BOTH the beat we are
+  /// leaving and the one we are arriving at, so the mask slides with the pan
+  /// rather than snapping into existence when it lands.
+  List<NRect> _prevFocus = const [];
+
   List<NRect> get _maskFocus {
-    if (_anim.isAnimating) return const [];
-    if (_step < 0 || _step >= _beats.length) return const [];
-    return _beats[_step].focus;
+    final now = (_step < 0 || _step >= _beats.length)
+        ? const <NRect>[]
+        : _beats[_step].focus;
+    // A whole-page step is unmasked by design.
+    if (now.isEmpty) return const [];
+    if (_anim.isAnimating && _prevFocus.isNotEmpty) {
+      return [..._prevFocus, ...now];
+    }
+    return now;
   }
 
   String _stepLabel() {
@@ -309,6 +321,12 @@ class _PagePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    // Fill first: the letterbox bars were the Scaffold's black while the mask
+    // used the page's border colour, so a light-bordered page flicked from
+    // black to white as the mask appeared.
+    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height),
+        Paint()..color = border);
+
     final src = Rect.fromLTRB(
       view.l * image.width,
       view.t * image.height,

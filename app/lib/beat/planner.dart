@@ -118,7 +118,7 @@ class BeatPlanner {
   }
 
   List<Beat> plan(PageGuide page, Size viewport, Size pagePx) {
-    if (page.panels.isEmpty || page.confidence < 0.5) return const [];
+    if (page.panels.isEmpty) return const [];
 
     // Balloons grouped by owning panel, panels already in reading order.
     final byPanel = <int, List<int>>{};
@@ -131,9 +131,26 @@ class BeatPlanner {
     //    they are boundaries between blocks of text on black, so grouping by
     //    them puts nine captions in one 62%-of-page beat. Detect the shape and
     //    build units from the caption rows instead.
+    // When layout detection collapses (one "panel" for the whole page) the
+    // panel structure is worthless, but the balloons usually are not. Reading
+    // by text rows beats refusing to guide at all.
     final splashUnits = _splashUnits(page, viewport, pagePx);
     if (splashUnits != null) {
-      return _finish(splashUnits, page, viewport, pagePx);
+      // Route through the same grouping as everything else so the beat count
+      // lands in the 4-6 target instead of one beat per caption row.
+      var g = _bestGrouping(splashUnits, page, viewport, pagePx);
+      g = _mergeAdjacent(g, splashUnits, page, viewport, pagePx);
+      final merged = <_Unit>[];
+      for (final grp in g) {
+        final rect =
+            grp.map((i) => splashUnits[i].rect).reduce((a, b) => a.union(b));
+        final balloons = <int>[];
+        for (final i in grp) {
+          balloons.addAll(splashUnits[i].balloons);
+        }
+        merged.add(_Unit(splashUnits[grp.first].panel, rect, balloons));
+      }
+      return _finish(merged, page, viewport, pagePx);
     }
 
     // 1. One unit per panel. A panel is only split when showing it whole
@@ -154,8 +171,21 @@ class BeatPlanner {
       if (tallPanel && gain < minGain) {
         k = math.min(3, (minGain / math.max(gain, 0.01)).ceil());
       }
+      // A slice boundary must not cut a balloon in half either.
+      if (k > 1) {
+        for (var i = 1; i < k && k > 1; i++) {
+          final cut = rect.t + rect.h * i / k;
+          for (final j in ids) {
+            final r = page.balloons[j].rect;
+            if (r.t < cut && r.b > cut) {
+              k = 1;
+              break;
+            }
+          }
+        }
+      }
       if (k <= 1) {
-        units.add(_Unit(pi, rect, ids));
+        units.addAll(_splitByDialogue(_Unit(pi, rect, ids), page, viewport, pagePx));
         continue;
       }
       for (var i = 0; i < k; i++) {
@@ -179,7 +209,10 @@ class BeatPlanner {
     const minUnitArea = 0.03;
     for (var i = units.length - 1; i >= 0 && units.length > 1; i--) {
       if (units[i].rect.area >= minUnitArea) continue;
-      final j = (i == 0) ? 1 : i - 1;
+      // Absorb only into a neighbour it tiles with. A bounding-box union
+      // swallows a third panel and produces beats nested inside each other.
+      final j = _tilingNeighbour(units, i);
+      if (j < 0) continue;
       units[j] = _Unit(units[j].panel, units[j].rect.union(units[i].rect),
           [...units[j].balloons, ...units[i].balloons]);
       units.removeAt(i);
@@ -214,7 +247,26 @@ class BeatPlanner {
     final shown = <NRect>[];
     final seen = <int>{};
     for (final u in merged) {
-      final rect = _expand(page, u, viewport, pagePx, shown, seen);
+      // Balloons are assigned to a panel by their centre, so one can overflow
+      // the panel it belongs to. The beat must still show it whole.
+      var base = u.rect;
+      for (final i in u.balloons) {
+        base = base.union(page.balloons[i].rect);
+      }
+      final unit = _Unit(u.panel, base, u.balloons, keepApart: u.keepApart);
+      final rect = _expand(page, unit, viewport, pagePx, shown, seen);
+      // A beat almost entirely inside one already shown adds nothing.
+      // A beat that mostly repeats one already shown adds nothing. Art beats
+      // are held to a tighter bar than dialogue: page 14 had a 70%-repeat beat
+      // carrying no dialogue at all.
+      var repeated = 0.0;
+      for (final s in shown) {
+        repeated += s.overlap(rect);
+      }
+      final share = repeated / math.max(rect.area, 1e-9);
+      final addsNothing = u.balloons.isEmpty || u.balloons.every(seen.contains);
+      if (addsNothing && share > (u.balloons.isEmpty ? 0.55 : 0.85)) continue;
+
       beats.add(Beat(
         rect: rect,
         balloons: u.balloons,
@@ -227,6 +279,70 @@ class BeatPlanner {
       }
     }
     return beats;
+  }
+
+  int _tilingNeighbour(List<_Unit> units, int i) {
+    const eps = 0.004;
+    final a = units[i].rect;
+    for (var j = 0; j < units.length; j++) {
+      if (j == i) continue;
+      final b = units[j].rect;
+      final alignedV = (a.t - b.t).abs() <= eps && (a.b - b.b).abs() <= eps;
+      final alignedH = (a.l - b.l).abs() <= eps && (a.r - b.r).abs() <= eps;
+      if (alignedV && ((a.l - b.r).abs() <= eps || (a.r - b.l).abs() <= eps)) return j;
+      if (alignedH && ((a.t - b.b).abs() <= eps || (a.b - b.t).abs() <= eps)) return j;
+    }
+    return -1;
+  }
+
+  /// A wide panel holding two well-separated groups of dialogue is two beats.
+  /// One character speaks on the left, another on the right - showing them
+  /// together wastes the zoom and reads as one moment when it is two.
+  List<_Unit> _splitByDialogue(_Unit u, PageGuide page, Size viewport,
+      Size pagePx) {
+    if (u.balloons.length < 2) return [u];
+    // Genuinely wide. Savage Dragon #1 p13's face panel is only 1.03x wider
+    // than tall and reads as one moment; issue 100's are nearer 2x.
+    final wide = u.rect.w * pagePx.width > u.rect.h * pagePx.height * 1.65;
+    if (!wide) return [u];
+
+    final xs = u.balloons.map((i) => page.balloons[i].rect).toList()
+      ..sort((a, b) => a.cx.compareTo(b.cx));
+    // Widest horizontal gap between consecutive balloons.
+    var gap = 0.0;
+    var at = -1.0;
+    for (var i = 0; i < xs.length - 1; i++) {
+      final g = xs[i + 1].l - xs[i].r;
+      if (g > gap) {
+        gap = g;
+        at = (xs[i].r + xs[i + 1].l) / 2;
+      }
+    }
+    // Must be a real gap, and leave dialogue on both sides. Balloons often
+    // overlap in x, so most gaps are negative; a clearly positive one is the
+    // boundary between two speakers. Page 8 needed 5% of panel width.
+    if (gap < 0.04 * u.rect.w || gap < 0.02 ||
+        at <= u.rect.l + 0.15 * u.rect.w ||
+        at >= u.rect.r - 0.15 * u.rect.w) {
+      return [u];
+    }
+    // Never cut a balloon in half. Assignment is by centre, so a wide balloon
+    // whose centre sits on one side can still straddle the split.
+    for (final i in u.balloons) {
+      final r = page.balloons[i].rect;
+      if (r.l < at && r.r > at) return [u];
+    }
+    final left = NRect(u.rect.l, u.rect.t, at, u.rect.b);
+    final right = NRect(at, u.rect.t, u.rect.r, u.rect.b);
+    List<int> inRect(NRect r) => u.balloons
+        .where((i) => page.balloons[i].rect.cx >= r.l && page.balloons[i].rect.cx <= r.r)
+        .toList();
+    final lb = inRect(left), rb = inRect(right);
+    if (lb.isEmpty || rb.isEmpty) return [u];
+    return [
+      _Unit(u.panel, left, lb, keepApart: true),
+      _Unit(u.panel, right, rb, keepApart: true),
+    ];
   }
 
   /// Contiguous partitions of [units] into k groups, for k in the target
@@ -275,6 +391,7 @@ class BeatPlanner {
       for (var i = 0; i < out.length - 1; i++) {
         final a = out[i], b = out[i + 1];
         if (b.first != a.last + 1) continue; // not contiguous in reading order
+        if ([...a, ...b].any((i) => units[i].keepApart)) continue;
         final rect = _unionOf(units, a.first, b.last + 1);
         if (rect.area > maxBeatArea) continue;
         // Never merge back into a full-height column.
@@ -306,7 +423,9 @@ class BeatPlanner {
     for (var i = 0; i < page.panels.length; i++) {
       if (page.panels[i].rect.area > 0.5) dominant = i;
     }
-    if (dominant < 0) return null;
+    // Also take this path when the analyser flagged the layout as unreliable.
+    if (dominant < 0 && page.confidence >= 0.5) return null;
+    if (dominant < 0) dominant = 0;
     // Prefer captions where we have them. On p15 the blob detector returned
     // eight hits, all of them sky between laundry on a washing line, while the
     // caption detector returned exactly the nine real captions.
@@ -413,6 +532,9 @@ class BeatPlanner {
   bool _groupAllowed(List<_Unit> units, int a, int b, Size viewport,
       Size pagePx) {
     if (b - a <= 1) return true; // a lone panel is always a valid beat
+    for (var i = a; i < b; i++) {
+      if (units[i].keepApart) return false; // split between speakers, keep it
+    }
     final rect = _unionOf(units, a, b);
     if (rect.area > maxBeatArea) return false;
     // Without this the DP happily reassembles a sliced column into one
@@ -561,5 +683,10 @@ class _Unit {
   final int panel;
   final NRect rect;
   final List<int> balloons;
-  const _Unit(this.panel, this.rect, this.balloons);
+
+  /// Set when this unit came from splitting a panel between two speakers.
+  /// Without it the grouping DP simply merges the halves straight back.
+  final bool keepApart;
+
+  const _Unit(this.panel, this.rect, this.balloons, {this.keepApart = false});
 }

@@ -52,16 +52,22 @@ def absorb_slivers(panels, page_area, min_share=0.014):
             for j, q in enumerate(panels):
                 if i == j:
                     continue
-                # shared edge length, if they abut
-                vx = min(p[3], q[3]) - max(p[1], q[1])   # vertical overlap
-                hx = min(p[2], q[2]) - max(p[0], q[0])   # horizontal overlap
-                touch_v = vx > 0 and (abs(p[0] - q[2]) <= 2 or abs(p[2] - q[0]) <= 2)
-                touch_h = hx > 0 and (abs(p[1] - q[3]) <= 2 or abs(p[3] - q[1]) <= 2)
-                edge = vx if touch_v else (hx if touch_h else 0)
+                # Merge only when the two tile EXACTLY - same extent on the
+                # perpendicular axis and touching on the shared one. A plain
+                # bounding-box union silently swallows a third panel, which is
+                # how page 7 ended up with panel 3 covering 100% of panel 2 and
+                # the reader seeing a beat entirely inside its predecessor.
+                aligned_v = abs(p[1] - q[1]) <= 2 and abs(p[3] - q[3]) <= 2
+                aligned_h = abs(p[0] - q[0]) <= 2 and abs(p[2] - q[2]) <= 2
+                touch_v = aligned_v and (abs(p[0] - q[2]) <= 2 or abs(p[2] - q[0]) <= 2)
+                touch_h = aligned_h and (abs(p[1] - q[3]) <= 2 or abs(p[3] - q[1]) <= 2)
+                if not (touch_v or touch_h):
+                    continue
+                edge = (p[3] - p[1]) if touch_v else (p[2] - p[0])
                 if edge > best_edge:
                     best, best_edge = j, edge
             if best is None:
-                continue
+                continue  # leave it; better a sliver than an overlapping panel
             q = panels[best]
             panels[best] = (min(p[0], q[0]), min(p[1], q[1]),
                             max(p[2], q[2]), max(p[3], q[3]))

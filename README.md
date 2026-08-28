@@ -38,6 +38,40 @@ samples/        key result images from the session
 work/           scratch: rendered pages, output frames  (override with $CG_WORK)
 ```
 
+## Detection: trained model vs threshold stack
+
+`cg/mldetect.py` runs **ogkalu/comic-text-and-bubble-detector** (RT-DETR-v2,
+ONNX), fine-tuned on ~11k manga, webtoon, manhua and Western comic pages.
+Classes: `bubble`, `text_bubble`, `text_free`.
+
+Setup (model is 161MB, gitignored):
+
+```bash
+python3 -m venv .venv && ./.venv/bin/pip install onnxruntime numpy pillow
+mkdir -p models && curl -L -o models/detector.onnx \
+  https://huggingface.co/ogkalu/comic-text-and-bubble-detector/resolve/main/detector.onnx
+./.venv/bin/python -m cg.export /path/to/comic.pdf 1 40
+```
+
+Measured against known ground truth, 1.8s/page on CPU:
+
+| page | truth | model | threshold stack |
+| --- | --- | --- | --- |
+| i100 p1 cover | 0 | **0** | 26 (all false) |
+| i100 p4 dense splash | 2 | **2** | 29 (27 false) |
+| i100 p6 story | 20 | **20** | 24 |
+| i100 p16 story | 14 | **14** | 14 (after tuning) |
+| sd1 p13 story | 13 | 15 | 13 |
+| sd1 p15 splash | 9 | **9** | 6 (needed invtext.py) |
+| absalom p7 | 9 | **9** | 11 |
+
+`cg/detect.py` (the hand-tuned stack) still runs when onnxruntime or the model
+is absent. Keep it: it is the fallback, and the comparison.
+
+ONNX not torch, deliberately - onnxruntime is lighter and has mobile bindings,
+so the same model can run on-device, which is required for a published app
+where strangers analyse their own libraries.
+
 ## Running
 
 ```bash
